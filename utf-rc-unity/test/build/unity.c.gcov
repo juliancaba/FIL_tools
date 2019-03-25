@@ -1,0 +1,1304 @@
+        -:    0:Source:../../src/unity.c
+        -:    0:Graph:unity.gcno
+        -:    0:Data:unity.gcda
+        -:    0:Runs:1
+        -:    0:Programs:1
+        -:    1:/* =========================================================================
+        -:    2:    Unity Project - A Test Framework for C
+        -:    3:    Copyright (c) 2007-14 Mike Karlesky, Mark VanderVoord, Greg Williams
+        -:    4:    [Released under MIT License. Please refer to license.txt for details]
+        -:    5:============================================================================ */
+        -:    6:
+        -:    7:#include "unity.h"
+        -:    8:#include <stddef.h>
+        -:    9:
+        -:   10:/* If omitted from header, declare overrideable prototypes here so they're ready for use */
+        -:   11:#ifdef UNITY_OMIT_OUTPUT_CHAR_HEADER_DECLARATION
+        -:   12:void UNITY_OUTPUT_CHAR(int);
+        -:   13:#endif
+        -:   14:
+        -:   15:/* /\* Helpful macros for us to use here *\/ */
+        -:   16:/* #define UNITY_FAIL_AND_BAIL   { Unity.CurrentTestFailed  = 1; longjmp(Unity.AbortFrame, 1); } */
+        -:   17:/* #define UNITY_IGNORE_AND_BAIL { Unity.CurrentTestIgnored = 1; longjmp(Unity.AbortFrame, 1); } */
+        -:   18:
+        -:   19:/* /\* return prematurely if we are already in failure or ignore state *\/ */
+        -:   20:/* #define UNITY_SKIP_EXECUTION  { if ((Unity.CurrentTestFailed != 0) || (Unity.CurrentTestIgnored != 0)) {return;} } */
+        -:   21:
+        -:   22:struct _Unity Unity;
+        -:   23:
+        -:   24:static const char UnityStrOk[]                     = "OK";
+        -:   25:static const char UnityStrPass[]                   = "PASS";
+        -:   26:static const char UnityStrFail[]                   = "FAIL";
+        -:   27:static const char UnityStrIgnore[]                 = "IGNORE";
+        -:   28:static const char UnityStrNull[]                   = "NULL";
+        -:   29:static const char UnityStrSpacer[]                 = ". ";
+        -:   30:static const char UnityStrExpected[]               = " Expected ";
+        -:   31:static const char UnityStrWas[]                    = " Was ";
+        -:   32:static const char UnityStrElement[]                = " Element ";
+        -:   33:static const char UnityStrByte[]                   = " Byte ";
+        -:   34:static const char UnityStrMemory[]                 = " Memory Mismatch.";
+        -:   35:static const char UnityStrDelta[]                  = " Values Not Within Delta ";
+        -:   36:static const char UnityStrPointless[]              = " You Asked Me To Compare Nothing, Which Was Pointless.";
+        -:   37:static const char UnityStrNullPointerForExpected[] = " Expected pointer to be NULL";
+        -:   38:static const char UnityStrNullPointerForActual[]   = " Actual pointer was NULL";
+        -:   39:static const char UnityStrNot[]                    = "Not ";
+        -:   40:static const char UnityStrInf[]                    = "Infinity";
+        -:   41:static const char UnityStrNegInf[]                 = "Negative Infinity";
+        -:   42:static const char UnityStrNaN[]                    = "NaN";
+        -:   43:static const char UnityStrDet[]                    = "Determinate";
+        -:   44:static const char UnityStrInvalidFloatTrait[]      = "Invalid Float Trait";
+        -:   45:const char UnityStrErrFloat[]                      = "Unity Floating Point Disabled";
+        -:   46:const char UnityStrErrDouble[]                     = "Unity Double Precision Disabled";
+        -:   47:const char UnityStrErr64[]                         = "Unity 64-bit Support Disabled";
+        -:   48:static const char UnityStrBreaker[]                = "-----------------------";
+        -:   49:static const char UnityStrResultsTests[]           = " Tests ";
+        -:   50:static const char UnityStrResultsFailures[]        = " Failures ";
+        -:   51:static const char UnityStrResultsIgnored[]         = " Ignored ";
+        -:   52:static const char UnityStrDetail1Name[]            = UNITY_DETAIL1_NAME " ";
+        -:   53:static const char UnityStrDetail2Name[]            = " " UNITY_DETAIL2_NAME " ";
+        -:   54:
+        -:   55:#ifdef UNITY_FLOAT_NEEDS_ZERO
+        -:   56:/* Dividing by these constants produces +/- infinity.
+        -:   57: * The rationale is given in UnityAssertFloatIsInf's body. */
+        -:   58:static const _UF f_zero = 0.0f;
+        -:   59:#endif
+        -:   60:
+        -:   61:/* compiler-generic print formatting masks */
+        -:   62:static const _U_UINT UnitySizeMask[] =
+        -:   63:{
+        -:   64:    255u,         /* 0xFF */
+        -:   65:    65535u,       /* 0xFFFF */
+        -:   66:    65535u,
+        -:   67:    4294967295u,  /* 0xFFFFFFFF */
+        -:   68:    4294967295u,
+        -:   69:    4294967295u,
+        -:   70:    4294967295u
+        -:   71:#ifdef UNITY_SUPPORT_64
+        -:   72:    ,0xFFFFFFFFFFFFFFFF
+        -:   73:#endif
+        -:   74:};
+        -:   75:
+        -:   76:/*-----------------------------------------------
+        -:   77: * Pretty Printers & Test Result Output Handlers
+        -:   78: *-----------------------------------------------*/
+        -:   79:
+     2334:   80:void UnityPrint(const char* string)
+        -:   81:{
+     2334:   82:    const char* pch = string;
+        -:   83:
+     2334:   84:    if (pch != NULL)
+        -:   85:    {
+    43993:   86:        while (*pch)
+        -:   87:        {
+        -:   88:            /* printable characters plus CR & LF are printed */
+    39325:   89:            if ((*pch <= 126) && (*pch >= 32))
+        -:   90:            {
+    39321:   91:                UNITY_OUTPUT_CHAR(*pch);
+        -:   92:            }
+        -:   93:            /* write escaped carriage returns */
+        4:   94:            else if (*pch == 13)
+        -:   95:            {
+        1:   96:                UNITY_OUTPUT_CHAR('\\');
+        1:   97:                UNITY_OUTPUT_CHAR('r');
+        -:   98:            }
+        -:   99:            /* write escaped line feeds */
+        3:  100:            else if (*pch == 10)
+        -:  101:            {
+        1:  102:                UNITY_OUTPUT_CHAR('\\');
+        1:  103:                UNITY_OUTPUT_CHAR('n');
+        -:  104:            }
+        -:  105:            /* unprintable characters are shown as codes */
+        -:  106:            else
+        -:  107:            {
+        2:  108:                UNITY_OUTPUT_CHAR('\\');
+        2:  109:                UnityPrintNumberHex((_U_UINT)*pch, 2);
+        -:  110:            }
+    39325:  111:            pch++;
+        -:  112:        }
+        -:  113:    }
+     2334:  114:}
+        -:  115:
+        -:  116:
+       10:  117:void UnityPrintLen(const char* string, const _UU32 length)
+        -:  118:{
+       10:  119:    const char* pch = string;
+        -:  120:
+       10:  121:    if (pch != NULL)
+        -:  122:    {
+       46:  123:        while (*pch && (_UU32)(pch - string) < length)
+        -:  124:        {
+        -:  125:            /* printable characters plus CR & LF are printed */
+       26:  126:            if ((*pch <= 126) && (*pch >= 32))
+        -:  127:            {
+       23:  128:                UNITY_OUTPUT_CHAR(*pch);
+        -:  129:            }
+        -:  130:            /* write escaped carriage returns */
+        3:  131:            else if (*pch == 13)
+        -:  132:            {
+        1:  133:                UNITY_OUTPUT_CHAR('\\');
+        1:  134:                UNITY_OUTPUT_CHAR('r');
+        -:  135:            }
+        -:  136:            /* write escaped line feeds */
+        2:  137:            else if (*pch == 10)
+        -:  138:            {
+        1:  139:                UNITY_OUTPUT_CHAR('\\');
+        1:  140:                UNITY_OUTPUT_CHAR('n');
+        -:  141:            }
+        -:  142:            /* unprintable characters are shown as codes */
+        -:  143:            else
+        -:  144:            {
+        1:  145:                UNITY_OUTPUT_CHAR('\\');
+        1:  146:                UnityPrintNumberHex((_U_UINT)*pch, 2);
+        -:  147:            }
+       26:  148:            pch++;
+        -:  149:        }
+        -:  150:    }
+       10:  151:}
+        -:  152:
+        -:  153:/*-----------------------------------------------*/
+      239:  154:void UnityPrintNumberByStyle(const _U_SINT number, const UNITY_DISPLAY_STYLE_T style)
+        -:  155:{
+      239:  156:    if ((style & UNITY_DISPLAY_RANGE_INT) == UNITY_DISPLAY_RANGE_INT)
+        -:  157:    {
+       61:  158:        UnityPrintNumber(number);
+        -:  159:    }
+      178:  160:    else if ((style & UNITY_DISPLAY_RANGE_UINT) == UNITY_DISPLAY_RANGE_UINT)
+        -:  161:    {
+       84:  162:        UnityPrintNumberUnsigned(  (_U_UINT)number  &  UnitySizeMask[((_U_UINT)style & (_U_UINT)0x0F) - 1]  );
+        -:  163:    }
+        -:  164:    else
+        -:  165:    {
+       94:  166:        UnityPrintNumberHex((_U_UINT)number, (char)((style & 0x000F) << 1));
+        -:  167:    }
+      239:  168:}
+        -:  169:
+        -:  170:/*-----------------------------------------------*/
+      647:  171:void UnityPrintNumber(const _U_SINT number_to_print)
+        -:  172:{
+      647:  173:    _U_UINT number = (_U_UINT)number_to_print;
+        -:  174:
+      647:  175:    if (number_to_print < 0)
+        -:  176:    {
+        -:  177:        /* A negative number, including MIN negative */
+       23:  178:        UNITY_OUTPUT_CHAR('-');
+       23:  179:        number = (_U_UINT)(-number_to_print);
+        -:  180:    }
+      647:  181:    UnityPrintNumberUnsigned(number);
+      647:  182:}
+        -:  183:
+        -:  184:/*-----------------------------------------------
+        -:  185: * basically do an itoa using as little ram as possible */
+      805:  186:void UnityPrintNumberUnsigned(const _U_UINT number)
+        -:  187:{
+      805:  188:    _U_UINT divisor = 1;
+        -:  189:
+        -:  190:    /* figure out initial divisor */
+     3512:  191:    while (number / divisor > 9)
+        -:  192:    {
+     1902:  193:        divisor *= 10;
+        -:  194:    }
+        -:  195:
+        -:  196:    /* now mod and print, then divide divisor */
+        -:  197:    do
+        -:  198:    {
+     2707:  199:        UNITY_OUTPUT_CHAR((char)('0' + (number / divisor % 10)));
+     2707:  200:        divisor /= 10;
+        -:  201:    }
+     2707:  202:    while (divisor > 0);
+      805:  203:}
+        -:  204:
+        -:  205:/*-----------------------------------------------*/
+       97:  206:void UnityPrintNumberHex(const _U_UINT number, const char nibbles_to_print)
+        -:  207:{
+        -:  208:    _U_UINT nibble;
+       97:  209:    char nibbles = nibbles_to_print;
+       97:  210:    UNITY_OUTPUT_CHAR('0');
+       97:  211:    UNITY_OUTPUT_CHAR('x');
+        -:  212:
+      896:  213:    while (nibbles > 0)
+        -:  214:    {
+      702:  215:        nibble = (number >> (--nibbles << 2)) & 0x0000000F;
+      702:  216:        if (nibble <= 9)
+        -:  217:        {
+      494:  218:            UNITY_OUTPUT_CHAR((char)('0' + nibble));
+        -:  219:        }
+        -:  220:        else
+        -:  221:        {
+      208:  222:            UNITY_OUTPUT_CHAR((char)('A' - 10 + nibble));
+        -:  223:        }
+        -:  224:    }
+       97:  225:}
+        -:  226:
+        -:  227:/*-----------------------------------------------*/
+       10:  228:void UnityPrintMask(const _U_UINT mask, const _U_UINT number)
+        -:  229:{
+       10:  230:    _U_UINT current_bit = (_U_UINT)1 << (UNITY_INT_WIDTH - 1);
+        -:  231:    _US32 i;
+        -:  232:
+      330:  233:    for (i = 0; i < UNITY_INT_WIDTH; i++)
+        -:  234:    {
+      320:  235:        if (current_bit & mask)
+        -:  236:        {
+       84:  237:            if (current_bit & number)
+        -:  238:            {
+       42:  239:                UNITY_OUTPUT_CHAR('1');
+        -:  240:            }
+        -:  241:            else
+        -:  242:            {
+       42:  243:                UNITY_OUTPUT_CHAR('0');
+        -:  244:            }
+        -:  245:        }
+        -:  246:        else
+        -:  247:        {
+      236:  248:            UNITY_OUTPUT_CHAR('X');
+        -:  249:        }
+      320:  250:        current_bit = current_bit >> 1;
+        -:  251:    }
+       10:  252:}
+        -:  253:
+        -:  254:/*-----------------------------------------------*/
+        -:  255:#ifdef UNITY_FLOAT_VERBOSE
+        -:  256:#include <stdio.h>
+        -:  257:
+        -:  258:#ifndef UNITY_VERBOSE_NUMBER_MAX_LENGTH
+        -:  259:# ifdef UNITY_DOUBLE_VERBOSE
+        -:  260:#  define UNITY_VERBOSE_NUMBER_MAX_LENGTH 317
+        -:  261:# else
+        -:  262:#  define UNITY_VERBOSE_NUMBER_MAX_LENGTH 47
+        -:  263:# endif
+        -:  264:#endif
+        -:  265:
+        -:  266:void UnityPrintFloat(_UF number)
+        -:  267:{
+        -:  268:    char TempBuffer[UNITY_VERBOSE_NUMBER_MAX_LENGTH + 1];
+        -:  269:    snprintf(TempBuffer, sizeof(TempBuffer), "%.6f", number);
+        -:  270:    UnityPrint(TempBuffer);
+        -:  271:}
+        -:  272:#endif
+        -:  273:
+        -:  274:/*-----------------------------------------------*/
+        -:  275:
+       10:  276:void UnityPrintFail(void)
+        -:  277:{
+       10:  278:    UnityPrint(UnityStrFail);
+       10:  279:}
+        -:  280:
+        1:  281:void UnityPrintOk(void)
+        -:  282:{
+        1:  283:    UnityPrint(UnityStrOk);
+        1:  284:}
+        -:  285:
+        -:  286:/*-----------------------------------------------*/
+      570:  287:void UnityTestResultsBegin(const char* file, const UNITY_LINE_TYPE line)
+        -:  288:{
+        -:  289:#ifndef UNITY_FIXTURES
+      570:  290:    UnityPrint(file);
+      570:  291:    UNITY_OUTPUT_CHAR(':');
+      570:  292:    UnityPrintNumber((_U_SINT)line);
+      570:  293:    UNITY_OUTPUT_CHAR(':');
+      570:  294:    UnityPrint(Unity.CurrentTestName);
+      570:  295:    UNITY_OUTPUT_CHAR(':');
+        -:  296:#else
+        -:  297:    UNITY_UNUSED(file);
+        -:  298:    UNITY_UNUSED(line);
+        -:  299:#endif
+      570:  300:}
+        -:  301:
+        -:  302:/*-----------------------------------------------*/
+      207:  303:void UnityTestResultsFailBegin(const UNITY_LINE_TYPE line)
+        -:  304:{
+        -:  305:#ifndef UNITY_FIXTURES
+      207:  306:    UnityTestResultsBegin(Unity.TestFile, line);
+        -:  307:#else
+        -:  308:    UNITY_UNUSED(line);
+        -:  309:#endif
+      207:  310:    UnityPrint(UnityStrFail);
+      207:  311:    UNITY_OUTPUT_CHAR(':');
+      207:  312:}
+        -:  313:
+        -:  314:/*-----------------------------------------------*/
+      353:  315:void UnityConcludeTest(void)
+        -:  316:{
+      353:  317:    if (Unity.CurrentTestIgnored)
+        -:  318:    {
+        1:  319:        Unity.TestIgnores++;
+        -:  320:    }
+      352:  321:    else if (!Unity.CurrentTestFailed)
+        -:  322:    {
+      351:  323:        UnityTestResultsBegin(Unity.TestFile, Unity.CurrentTestLineNumber);
+      351:  324:        UnityPrint(UnityStrPass);
+        -:  325:    }
+        -:  326:    else
+        -:  327:    {
+        1:  328:        Unity.TestFailures++;
+        -:  329:    }
+        -:  330:
+      353:  331:    Unity.CurrentTestFailed = 0;
+      353:  332:    Unity.CurrentTestIgnored = 0;
+      353:  333:    UNITY_PRINT_EOL();
+      353:  334:    UNITY_FLUSH_CALL();
+      353:  335:}
+        -:  336:
+        -:  337:/*-----------------------------------------------*/
+      206:  338:void UnityAddMsgIfSpecified(const char* msg)
+        -:  339:{
+      206:  340:    if (msg)
+        -:  341:    {
+       18:  342:        UnityPrint(UnityStrSpacer);
+        -:  343:#ifndef UNITY_EXCLUDE_DETAILS
+       18:  344:        if (Unity.CurrentDetail1)
+        -:  345:        {
+        3:  346:            UnityPrint(UnityStrDetail1Name);
+        3:  347:            UnityPrint(Unity.CurrentDetail1);
+        3:  348:            if (Unity.CurrentDetail2)
+        -:  349:            {
+        1:  350:                UnityPrint(UnityStrDetail2Name);
+        1:  351:                UnityPrint(Unity.CurrentDetail2);
+        -:  352:            }
+        3:  353:            UnityPrint(UnityStrSpacer);
+        -:  354:        }
+        -:  355:#endif
+       18:  356:        UnityPrint(msg);
+        -:  357:    }
+      206:  358:}
+        -:  359:
+        -:  360:/*-----------------------------------------------*/
+       12:  361:void UnityPrintExpectedAndActualStrings(const char* expected, const char* actual)
+        -:  362:{
+       12:  363:    UnityPrint(UnityStrExpected);
+       12:  364:    if (expected != NULL)
+        -:  365:    {
+       10:  366:        UNITY_OUTPUT_CHAR('\'');
+       10:  367:        UnityPrint(expected);
+       10:  368:        UNITY_OUTPUT_CHAR('\'');
+        -:  369:    }
+        -:  370:    else
+        -:  371:    {
+        2:  372:      UnityPrint(UnityStrNull);
+        -:  373:    }
+       12:  374:    UnityPrint(UnityStrWas);
+       12:  375:    if (actual != NULL)
+        -:  376:    {
+       10:  377:        UNITY_OUTPUT_CHAR('\'');
+       10:  378:        UnityPrint(actual);
+       10:  379:        UNITY_OUTPUT_CHAR('\'');
+        -:  380:    }
+        -:  381:    else
+        -:  382:    {
+        2:  383:      UnityPrint(UnityStrNull);
+        -:  384:    }
+       12:  385:}
+        -:  386:
+        -:  387:/*-----------------------------------------------*/
+        6:  388:static void UnityPrintExpectedAndActualStringsLen(const char* expected, const char* actual, const _UU32 length)
+        -:  389:{
+        6:  390:    UnityPrint(UnityStrExpected);
+        6:  391:    if (expected != NULL)
+        -:  392:    {
+        5:  393:        UNITY_OUTPUT_CHAR('\'');
+        5:  394:        UnityPrintLen(expected, length);
+        5:  395:        UNITY_OUTPUT_CHAR('\'');
+        -:  396:    }
+        -:  397:    else
+        -:  398:    {
+        1:  399:      UnityPrint(UnityStrNull);
+        -:  400:    }
+        6:  401:    UnityPrint(UnityStrWas);
+        6:  402:    if (actual != NULL)
+        -:  403:    {
+        5:  404:        UNITY_OUTPUT_CHAR('\'');
+        5:  405:        UnityPrintLen(actual, length);
+        5:  406:        UNITY_OUTPUT_CHAR('\'');
+        -:  407:    }
+        -:  408:    else
+        -:  409:    {
+        1:  410:      UnityPrint(UnityStrNull);
+        -:  411:    }
+        6:  412:}
+        -:  413:
+        -:  414:
+        -:  415:
+        -:  416:/*-----------------------------------------------
+        -:  417: * Assertion & Control Helpers
+        -:  418: *-----------------------------------------------*/
+        -:  419:
+      185:  420:static int UnityCheckArraysForNull(UNITY_INTERNAL_PTR expected, UNITY_INTERNAL_PTR actual, const UNITY_LINE_TYPE lineNumber, const char* msg)
+        -:  421:{
+        -:  422:    /* return true if they are both NULL */
+      185:  423:    if ((expected == NULL) && (actual == NULL))
+        5:  424:        return 1;
+        -:  425:
+        -:  426:    /* throw error if just expected is NULL */
+      180:  427:    if (expected == NULL)
+        -:  428:    {
+        7:  429:        UnityTestResultsFailBegin(lineNumber);
+        7:  430:        UnityPrint(UnityStrNullPointerForExpected);
+        7:  431:        UnityAddMsgIfSpecified(msg);
+        7:  432:        UNITY_FAIL_AND_BAIL;
+        -:  433:    }
+        -:  434:
+        -:  435:    /* throw error if just actual is NULL */
+      173:  436:    if (actual == NULL)
+        -:  437:    {
+        7:  438:        UnityTestResultsFailBegin(lineNumber);
+        7:  439:        UnityPrint(UnityStrNullPointerForActual);
+        7:  440:        UnityAddMsgIfSpecified(msg);
+        7:  441:        UNITY_FAIL_AND_BAIL;
+        -:  442:    }
+        -:  443:
+        -:  444:    /* return false if neither is NULL */
+      166:  445:    return 0;
+        -:  446:}
+        -:  447:
+        -:  448:/*-----------------------------------------------
+        -:  449: * Assertion Functions
+        -:  450: *-----------------------------------------------*/
+        -:  451:
+       14:  452:void UnityAssertBits(const _U_SINT mask,
+        -:  453:                     const _U_SINT expected,
+        -:  454:                     const _U_SINT actual,
+        -:  455:                     const char* msg,
+        -:  456:                     const UNITY_LINE_TYPE lineNumber)
+        -:  457:{
+       14:  458:    UNITY_SKIP_EXECUTION;
+        -:  459:
+       14:  460:    if ((mask & expected) != (mask & actual))
+        -:  461:    {
+        5:  462:        UnityTestResultsFailBegin(lineNumber);
+        5:  463:        UnityPrint(UnityStrExpected);
+        5:  464:        UnityPrintMask((_U_UINT)mask, (_U_UINT)expected);
+        5:  465:        UnityPrint(UnityStrWas);
+        5:  466:        UnityPrintMask((_U_UINT)mask, (_U_UINT)actual);
+        5:  467:        UnityAddMsgIfSpecified(msg);
+        5:  468:        UNITY_FAIL_AND_BAIL;
+        -:  469:    }
+        -:  470:}
+        -:  471:
+        -:  472:/*-----------------------------------------------*/
+      228:  473:void UnityAssertEqualNumber(const _U_SINT expected,
+        -:  474:                            const _U_SINT actual,
+        -:  475:                            const char* msg,
+        -:  476:                            const UNITY_LINE_TYPE lineNumber,
+        -:  477:                            const UNITY_DISPLAY_STYLE_T style)
+        -:  478:{
+      228:  479:    UNITY_SKIP_EXECUTION;
+        -:  480:
+      228:  481:    if (expected != actual)
+        -:  482:    {
+       21:  483:        UnityTestResultsFailBegin(lineNumber);
+       21:  484:        UnityPrint(UnityStrExpected);
+       21:  485:        UnityPrintNumberByStyle(expected, style);
+       21:  486:        UnityPrint(UnityStrWas);
+       21:  487:        UnityPrintNumberByStyle(actual, style);
+       21:  488:        UnityAddMsgIfSpecified(msg);
+       21:  489:        UNITY_FAIL_AND_BAIL;
+        -:  490:    }
+        -:  491:}
+        -:  492:
+        -:  493:#define UnityPrintPointlessAndBail()       \
+        -:  494:{                                          \
+        -:  495:    UnityTestResultsFailBegin(lineNumber); \
+        -:  496:    UnityPrint(UnityStrPointless);         \
+        -:  497:    UnityAddMsgIfSpecified(msg);           \
+        -:  498:    UNITY_FAIL_AND_BAIL; }
+        -:  499:
+        -:  500:/*-----------------------------------------------*/
+      123:  501:void UnityAssertEqualIntArray(UNITY_INTERNAL_PTR expected,
+        -:  502:                              UNITY_INTERNAL_PTR actual,
+        -:  503:                              const _UU32 num_elements,
+        -:  504:                              const char* msg,
+        -:  505:                              const UNITY_LINE_TYPE lineNumber,
+        -:  506:                              const UNITY_DISPLAY_STYLE_T style)
+        -:  507:{
+      123:  508:    _UU32 elements = num_elements;
+      123:  509:    UNITY_INTERNAL_PTR ptr_exp = (UNITY_INTERNAL_PTR)expected;
+      123:  510:    UNITY_INTERNAL_PTR ptr_act = (UNITY_INTERNAL_PTR)actual;
+        -:  511:
+      123:  512:    UNITY_SKIP_EXECUTION;
+        -:  513:
+      123:  514:    if (elements == 0)
+        -:  515:    {
+        1:  516:        UnityPrintPointlessAndBail();
+        -:  517:    }
+        -:  518:
+      122:  519:    if (UnityCheckArraysForNull((UNITY_INTERNAL_PTR)expected, (UNITY_INTERNAL_PTR)actual, lineNumber, msg) == 1)
+        1:  520:        return;
+        -:  521:
+        -:  522:    /* If style is UNITY_DISPLAY_STYLE_INT, we'll fall into the default case rather than the INT16 or INT32 (etc) case
+        -:  523:     * as UNITY_DISPLAY_STYLE_INT includes a flag for UNITY_DISPLAY_RANGE_AUTO, which the width-specific
+        -:  524:     * variants do not. Therefore remove this flag. */
+      117:  525:    switch(style & (UNITY_DISPLAY_STYLE_T)(~UNITY_DISPLAY_RANGE_AUTO))
+        -:  526:    {
+       22:  527:        case UNITY_DISPLAY_STYLE_HEX8:
+        -:  528:        case UNITY_DISPLAY_STYLE_INT8:
+        -:  529:        case UNITY_DISPLAY_STYLE_UINT8:
+      100:  530:            while (elements--)
+        -:  531:            {
+       63:  532:                if (*(UNITY_PTR_ATTRIBUTE const _US8*)ptr_exp != *(UNITY_PTR_ATTRIBUTE const _US8*)ptr_act)
+        -:  533:                {
+        7:  534:                    UnityTestResultsFailBegin(lineNumber);
+        7:  535:                    UnityPrint(UnityStrElement);
+        7:  536:                    UnityPrintNumberUnsigned(num_elements - elements - 1);
+        7:  537:                    UnityPrint(UnityStrExpected);
+        7:  538:                    UnityPrintNumberByStyle(*(UNITY_PTR_ATTRIBUTE const _US8*)ptr_exp, style);
+        7:  539:                    UnityPrint(UnityStrWas);
+        7:  540:                    UnityPrintNumberByStyle(*(UNITY_PTR_ATTRIBUTE const _US8*)ptr_act, style);
+        7:  541:                    UnityAddMsgIfSpecified(msg);
+        7:  542:                    UNITY_FAIL_AND_BAIL;
+        -:  543:                }
+       56:  544:                ptr_exp = (UNITY_INTERNAL_PTR)((_UP)ptr_exp + 1);
+       56:  545:                ptr_act = (UNITY_INTERNAL_PTR)((_UP)ptr_act + 1);
+        -:  546:            }
+       15:  547:            break;
+       22:  548:        case UNITY_DISPLAY_STYLE_HEX16:
+        -:  549:        case UNITY_DISPLAY_STYLE_INT16:
+        -:  550:        case UNITY_DISPLAY_STYLE_UINT16:
+       96:  551:            while (elements--)
+        -:  552:            {
+       59:  553:                if (*(UNITY_PTR_ATTRIBUTE const _US16*)ptr_exp != *(UNITY_PTR_ATTRIBUTE const _US16*)ptr_act)
+        -:  554:                {
+        7:  555:                    UnityTestResultsFailBegin(lineNumber);
+        7:  556:                    UnityPrint(UnityStrElement);
+        7:  557:                    UnityPrintNumberUnsigned(num_elements - elements - 1);
+        7:  558:                    UnityPrint(UnityStrExpected);
+        7:  559:                    UnityPrintNumberByStyle(*(UNITY_PTR_ATTRIBUTE const _US16*)ptr_exp, style);
+        7:  560:                    UnityPrint(UnityStrWas);
+        7:  561:                    UnityPrintNumberByStyle(*(UNITY_PTR_ATTRIBUTE const _US16*)ptr_act, style);
+        7:  562:                    UnityAddMsgIfSpecified(msg);
+        7:  563:                    UNITY_FAIL_AND_BAIL;
+        -:  564:                }
+       52:  565:                ptr_exp = (UNITY_INTERNAL_PTR)((_UP)ptr_exp + 2);
+       52:  566:                ptr_act = (UNITY_INTERNAL_PTR)((_UP)ptr_act + 2);
+        -:  567:            }
+       15:  568:            break;
+        -:  569:#ifdef UNITY_SUPPORT_64
+       27:  570:        case UNITY_DISPLAY_STYLE_HEX64:
+        -:  571:        case UNITY_DISPLAY_STYLE_INT64:
+        -:  572:        case UNITY_DISPLAY_STYLE_UINT64:
+      117:  573:            while (elements--)
+        -:  574:            {
+       70:  575:                if (*(UNITY_PTR_ATTRIBUTE const _US64*)ptr_exp != *(UNITY_PTR_ATTRIBUTE const _US64*)ptr_act)
+        -:  576:                {
+        7:  577:                    UnityTestResultsFailBegin(lineNumber);
+        7:  578:                    UnityPrint(UnityStrElement);
+        7:  579:                    UnityPrintNumberUnsigned(num_elements - elements - 1);
+        7:  580:                    UnityPrint(UnityStrExpected);
+        7:  581:                    UnityPrintNumberByStyle(*(UNITY_PTR_ATTRIBUTE const _US64*)ptr_exp, style);
+        7:  582:                    UnityPrint(UnityStrWas);
+        7:  583:                    UnityPrintNumberByStyle(*(UNITY_PTR_ATTRIBUTE const _US64*)ptr_act, style);
+        7:  584:                    UnityAddMsgIfSpecified(msg);
+        7:  585:                    UNITY_FAIL_AND_BAIL;
+        -:  586:                }
+       63:  587:                ptr_exp = (UNITY_INTERNAL_PTR)((_UP)ptr_exp + 8);
+       63:  588:                ptr_act = (UNITY_INTERNAL_PTR)((_UP)ptr_act + 8);
+        -:  589:            }
+       20:  590:            break;
+        -:  591:#endif
+       46:  592:        default:
+      198:  593:            while (elements--)
+        -:  594:            {
+      122:  595:                if (*(UNITY_PTR_ATTRIBUTE const _US32*)ptr_exp != *(UNITY_PTR_ATTRIBUTE const _US32*)ptr_act)
+        -:  596:                {
+       16:  597:                    UnityTestResultsFailBegin(lineNumber);
+       16:  598:                    UnityPrint(UnityStrElement);
+       16:  599:                    UnityPrintNumberUnsigned(num_elements - elements - 1);
+       16:  600:                    UnityPrint(UnityStrExpected);
+       16:  601:                    UnityPrintNumberByStyle(*(UNITY_PTR_ATTRIBUTE const _US32*)ptr_exp, style);
+       16:  602:                    UnityPrint(UnityStrWas);
+       16:  603:                    UnityPrintNumberByStyle(*(UNITY_PTR_ATTRIBUTE const _US32*)ptr_act, style);
+       16:  604:                    UnityAddMsgIfSpecified(msg);
+       16:  605:                    UNITY_FAIL_AND_BAIL;
+        -:  606:                }
+      106:  607:                ptr_exp = (UNITY_INTERNAL_PTR)((_UP)ptr_exp + 4);
+      106:  608:                ptr_act = (UNITY_INTERNAL_PTR)((_UP)ptr_act + 4);
+        -:  609:            }
+       30:  610:            break;
+        -:  611:    }
+        -:  612:}
+        -:  613:
+        -:  614:/*-----------------------------------------------*/
+        -:  615:#ifndef UNITY_EXCLUDE_FLOAT
+       17:  616:void UnityAssertEqualFloatArray(UNITY_PTR_ATTRIBUTE const _UF* expected,
+        -:  617:                                UNITY_PTR_ATTRIBUTE const _UF* actual,
+        -:  618:                                const _UU32 num_elements,
+        -:  619:                                const char* msg,
+        -:  620:                                const UNITY_LINE_TYPE lineNumber)
+        -:  621:{
+       17:  622:    _UU32 elements = num_elements;
+       17:  623:    UNITY_PTR_ATTRIBUTE const _UF* ptr_expected = expected;
+       17:  624:    UNITY_PTR_ATTRIBUTE const _UF* ptr_actual = actual;
+        -:  625:    _UF diff, tol;
+        -:  626:
+       17:  627:    UNITY_SKIP_EXECUTION;
+        -:  628:
+       17:  629:    if (elements == 0)
+        -:  630:    {
+        1:  631:        UnityPrintPointlessAndBail();
+        -:  632:    }
+        -:  633:
+       16:  634:    if (UnityCheckArraysForNull((UNITY_INTERNAL_PTR)expected, (UNITY_INTERNAL_PTR)actual, lineNumber, msg) == 1)
+        1:  635:        return;
+        -:  636:
+       51:  637:    while (elements--)
+        -:  638:    {
+       33:  639:        diff = *ptr_expected - *ptr_actual;
+       33:  640:        if (diff < 0.0f)
+        3:  641:            diff = 0.0f - diff;
+       33:  642:        tol = UNITY_FLOAT_PRECISION * *ptr_expected;
+       33:  643:        if (tol < 0.0f)
+       13:  644:            tol = 0.0f - tol;
+        -:  645:
+        -:  646:        /* This first part of this condition will catch any NaN or Infinite values */
+       33:  647:        if (isnan(diff) || isinf(diff) || (diff > tol))
+        -:  648:        {
+        8:  649:            UnityTestResultsFailBegin(lineNumber);
+        8:  650:            UnityPrint(UnityStrElement);
+        8:  651:            UnityPrintNumberUnsigned(num_elements - elements - 1);
+        -:  652:#ifdef UNITY_FLOAT_VERBOSE
+        -:  653:            UnityPrint(UnityStrExpected);
+        -:  654:            UnityPrintFloat(*ptr_expected);
+        -:  655:            UnityPrint(UnityStrWas);
+        -:  656:            UnityPrintFloat(*ptr_actual);
+        -:  657:#else
+        8:  658:            UnityPrint(UnityStrDelta);
+        -:  659:#endif
+        8:  660:            UnityAddMsgIfSpecified(msg);
+        8:  661:            UNITY_FAIL_AND_BAIL;
+        -:  662:        }
+       25:  663:        ptr_expected++;
+       25:  664:        ptr_actual++;
+        -:  665:    }
+        -:  666:}
+        -:  667:
+        -:  668:/*-----------------------------------------------*/
+       21:  669:void UnityAssertFloatsWithin(const _UF delta,
+        -:  670:                             const _UF expected,
+        -:  671:                             const _UF actual,
+        -:  672:                             const char* msg,
+        -:  673:                             const UNITY_LINE_TYPE lineNumber)
+        -:  674:{
+       21:  675:    _UF diff = actual - expected;
+       21:  676:    _UF pos_delta = delta;
+        -:  677:
+       21:  678:    UNITY_SKIP_EXECUTION;
+        -:  679:
+       21:  680:    if (diff < 0.0f)
+        -:  681:    {
+        8:  682:        diff = 0.0f - diff;
+        -:  683:    }
+       21:  684:    if (pos_delta < 0.0f)
+        -:  685:    {
+        3:  686:        pos_delta = 0.0f - pos_delta;
+        -:  687:    }
+        -:  688:
+        -:  689:    /* This first part of this condition will catch any NaN or Infinite values */
+       21:  690:    if (isnan(diff) || isinf(diff) || (pos_delta < diff))
+        -:  691:    {
+       13:  692:        UnityTestResultsFailBegin(lineNumber);
+        -:  693:#ifdef UNITY_FLOAT_VERBOSE
+        -:  694:        UnityPrint(UnityStrExpected);
+        -:  695:        UnityPrintFloat(expected);
+        -:  696:        UnityPrint(UnityStrWas);
+        -:  697:        UnityPrintFloat(actual);
+        -:  698:#else
+       13:  699:        UnityPrint(UnityStrDelta);
+        -:  700:#endif
+       13:  701:        UnityAddMsgIfSpecified(msg);
+       13:  702:        UNITY_FAIL_AND_BAIL;
+        -:  703:    }
+        -:  704:}
+        -:  705:
+        -:  706:/*-----------------------------------------------*/
+       22:  707:void UnityAssertFloatSpecial(const _UF actual,
+        -:  708:                             const char* msg,
+        -:  709:                             const UNITY_LINE_TYPE lineNumber,
+        -:  710:                             const UNITY_FLOAT_TRAIT_T style)
+        -:  711:{
+       22:  712:    const char* trait_names[] = { UnityStrInf, UnityStrNegInf, UnityStrNaN, UnityStrDet };
+       22:  713:    _U_SINT should_be_trait   = ((_U_SINT)style & 1);
+       22:  714:    _U_SINT is_trait          = !should_be_trait;
+       22:  715:    _U_SINT trait_index       = (_U_SINT)(style >> 1);
+        -:  716:
+       22:  717:    UNITY_SKIP_EXECUTION;
+        -:  718:
+       22:  719:    switch(style)
+        -:  720:    {
+        -:  721:        /* To determine Inf / Neg Inf, we compare to an Inf / Neg Inf value we create on the fly
+        -:  722:         * We are using a variable to hold the zero value because some compilers complain about dividing by zero otherwise */
+        5:  723:        case UNITY_FLOAT_IS_INF:
+        -:  724:        case UNITY_FLOAT_IS_NOT_INF:
+        5:  725:            is_trait = isinf(actual) & ispos(actual);
+        5:  726:            break;
+        3:  727:        case UNITY_FLOAT_IS_NEG_INF:
+        -:  728:        case UNITY_FLOAT_IS_NOT_NEG_INF:
+        3:  729:            is_trait = isinf(actual) & isneg(actual);
+        3:  730:            break;
+        -:  731:
+        -:  732:        /* NaN is the only floating point value that does NOT equal itself. Therefore if Actual == Actual, then it is NOT NaN. */
+        5:  733:        case UNITY_FLOAT_IS_NAN:
+        -:  734:        case UNITY_FLOAT_IS_NOT_NAN:
+        5:  735:            is_trait = isnan(actual);
+        5:  736:            break;
+        -:  737:
+        -:  738:        /* A determinate number is non infinite and not NaN. (therefore the opposite of the two above) */
+        8:  739:        case UNITY_FLOAT_IS_DET:
+        -:  740:        case UNITY_FLOAT_IS_NOT_DET:
+        8:  741:            if (isinf(actual) | isnan(actual))
+        4:  742:                is_trait = 0;
+        -:  743:            else
+        4:  744:                is_trait = 1;
+        8:  745:            break;
+        -:  746:
+        1:  747:        default:
+        1:  748:            trait_index = 0;
+        1:  749:            trait_names[0] = UnityStrInvalidFloatTrait;
+        1:  750:            break;
+        -:  751:    }
+        -:  752:
+       22:  753:    if (is_trait != should_be_trait)
+        -:  754:    {
+       11:  755:        UnityTestResultsFailBegin(lineNumber);
+       11:  756:        UnityPrint(UnityStrExpected);
+       11:  757:        if (!should_be_trait)
+        5:  758:            UnityPrint(UnityStrNot);
+       11:  759:        UnityPrint(trait_names[trait_index]);
+       11:  760:        UnityPrint(UnityStrWas);
+        -:  761:#ifdef UNITY_FLOAT_VERBOSE
+        -:  762:        UnityPrintFloat(actual);
+        -:  763:#else
+       11:  764:        if (should_be_trait)
+        6:  765:            UnityPrint(UnityStrNot);
+       11:  766:        UnityPrint(trait_names[trait_index]);
+        -:  767:#endif
+       11:  768:        UnityAddMsgIfSpecified(msg);
+       11:  769:        UNITY_FAIL_AND_BAIL;
+        -:  770:    }
+        -:  771:}
+        -:  772:
+        -:  773:#endif /* not UNITY_EXCLUDE_FLOAT */
+        -:  774:
+        -:  775:/*-----------------------------------------------*/
+        -:  776:#ifndef UNITY_EXCLUDE_DOUBLE
+       17:  777:void UnityAssertEqualDoubleArray(UNITY_PTR_ATTRIBUTE const _UD* expected,
+        -:  778:                                 UNITY_PTR_ATTRIBUTE const _UD* actual,
+        -:  779:                                 const _UU32 num_elements,
+        -:  780:                                 const char* msg,
+        -:  781:                                 const UNITY_LINE_TYPE lineNumber)
+        -:  782:{
+       17:  783:    _UU32 elements = num_elements;
+       17:  784:    UNITY_PTR_ATTRIBUTE const _UD* ptr_expected = expected;
+       17:  785:    UNITY_PTR_ATTRIBUTE const _UD* ptr_actual = actual;
+        -:  786:    _UD diff, tol;
+        -:  787:
+       17:  788:    UNITY_SKIP_EXECUTION;
+        -:  789:
+       17:  790:    if (elements == 0)
+        -:  791:    {
+        1:  792:        UnityPrintPointlessAndBail();
+        -:  793:    }
+        -:  794:
+       16:  795:    if (UnityCheckArraysForNull((UNITY_INTERNAL_PTR)expected, (UNITY_INTERNAL_PTR)actual, lineNumber, msg) == 1)
+        1:  796:        return;
+        -:  797:
+       51:  798:    while (elements--)
+        -:  799:    {
+       33:  800:        diff = *ptr_expected - *ptr_actual;
+       33:  801:        if (diff < 0.0)
+        3:  802:          diff = 0.0 - diff;
+       33:  803:        tol = UNITY_DOUBLE_PRECISION * *ptr_expected;
+       33:  804:        if (tol < 0.0)
+       13:  805:            tol = 0.0 - tol;
+        -:  806:
+        -:  807:        /* This first part of this condition will catch any NaN or Infinite values */
+       33:  808:        if (isnan(diff) || isinf(diff) || (diff > tol))
+        -:  809:        {
+        8:  810:            UnityTestResultsFailBegin(lineNumber);
+        8:  811:            UnityPrint(UnityStrElement);
+        8:  812:            UnityPrintNumberUnsigned(num_elements - elements - 1);
+        -:  813:#ifdef UNITY_DOUBLE_VERBOSE
+        -:  814:            UnityPrint(UnityStrExpected);
+        -:  815:            UnityPrintFloat((float)(*ptr_expected));
+        -:  816:            UnityPrint(UnityStrWas);
+        -:  817:            UnityPrintFloat((float)(*ptr_actual));
+        -:  818:#else
+        8:  819:            UnityPrint(UnityStrDelta);
+        -:  820:#endif
+        8:  821:            UnityAddMsgIfSpecified(msg);
+        8:  822:            UNITY_FAIL_AND_BAIL;
+        -:  823:        }
+       25:  824:        ptr_expected++;
+       25:  825:        ptr_actual++;
+        -:  826:    }
+        -:  827:}
+        -:  828:
+        -:  829:/*-----------------------------------------------*/
+       21:  830:void UnityAssertDoublesWithin(const _UD delta,
+        -:  831:                              const _UD expected,
+        -:  832:                              const _UD actual,
+        -:  833:                              const char* msg,
+        -:  834:                              const UNITY_LINE_TYPE lineNumber)
+        -:  835:{
+       21:  836:    _UD diff = actual - expected;
+       21:  837:    _UD pos_delta = delta;
+        -:  838:
+       21:  839:    UNITY_SKIP_EXECUTION;
+        -:  840:
+       21:  841:    if (diff < 0.0)
+        -:  842:    {
+        9:  843:        diff = 0.0 - diff;
+        -:  844:    }
+       21:  845:    if (pos_delta < 0.0)
+        -:  846:    {
+        3:  847:        pos_delta = 0.0 - pos_delta;
+        -:  848:    }
+        -:  849:
+        -:  850:    /* This first part of this condition will catch any NaN or Infinite values */
+       21:  851:    if (isnan(diff) || isinf(diff) || (pos_delta < diff))
+        -:  852:    {
+       13:  853:        UnityTestResultsFailBegin(lineNumber);
+        -:  854:#ifdef UNITY_DOUBLE_VERBOSE
+        -:  855:        UnityPrint(UnityStrExpected);
+        -:  856:        UnityPrintFloat((float)expected);
+        -:  857:        UnityPrint(UnityStrWas);
+        -:  858:        UnityPrintFloat((float)actual);
+        -:  859:#else
+       13:  860:        UnityPrint(UnityStrDelta);
+        -:  861:#endif
+       13:  862:        UnityAddMsgIfSpecified(msg);
+       13:  863:        UNITY_FAIL_AND_BAIL;
+        -:  864:    }
+        -:  865:}
+        -:  866:
+        -:  867:/*-----------------------------------------------*/
+        -:  868:
+       22:  869:void UnityAssertDoubleSpecial(const _UD actual,
+        -:  870:                              const char* msg,
+        -:  871:                              const UNITY_LINE_TYPE lineNumber,
+        -:  872:                              const UNITY_FLOAT_TRAIT_T style)
+        -:  873:{
+       22:  874:    const char* trait_names[] = { UnityStrInf, UnityStrNegInf, UnityStrNaN, UnityStrDet };
+       22:  875:    _U_SINT should_be_trait   = ((_U_SINT)style & 1);
+       22:  876:    _U_SINT is_trait          = !should_be_trait;
+       22:  877:    _U_SINT trait_index       = (_U_SINT)(style >> 1);
+        -:  878:
+       22:  879:    UNITY_SKIP_EXECUTION;
+        -:  880:
+       22:  881:     switch(style)
+        -:  882:    {
+        -:  883:        /* To determine Inf / Neg Inf, we compare to an Inf / Neg Inf value we create on the fly
+        -:  884:         * We are using a variable to hold the zero value because some compilers complain about dividing by zero otherwise */
+        5:  885:        case UNITY_FLOAT_IS_INF:
+        -:  886:        case UNITY_FLOAT_IS_NOT_INF:
+        5:  887:            is_trait = isinf(actual) & ispos(actual);
+        5:  888:            break;
+        3:  889:        case UNITY_FLOAT_IS_NEG_INF:
+        -:  890:        case UNITY_FLOAT_IS_NOT_NEG_INF:
+        3:  891:            is_trait = isinf(actual) & isneg(actual);
+        3:  892:            break;
+        -:  893:
+        -:  894:        /* NaN is the only floating point value that does NOT equal itself. Therefore if Actual == Actual, then it is NOT NaN. */
+        5:  895:        case UNITY_FLOAT_IS_NAN:
+        -:  896:        case UNITY_FLOAT_IS_NOT_NAN:
+        5:  897:            is_trait = isnan(actual);
+        5:  898:            break;
+        -:  899:
+        -:  900:        /* A determinate number is non infinite and not NaN. (therefore the opposite of the two above) */
+        8:  901:        case UNITY_FLOAT_IS_DET:
+        -:  902:        case UNITY_FLOAT_IS_NOT_DET:
+        8:  903:            if (isinf(actual) | isnan(actual))
+        4:  904:                is_trait = 0;
+        -:  905:            else
+        4:  906:                is_trait = 1;
+        8:  907:            break;
+        -:  908:
+        1:  909:        default:
+        1:  910:            trait_index = 0;
+        1:  911:            trait_names[0] = UnityStrInvalidFloatTrait;
+        1:  912:            break;
+        -:  913:    }
+        -:  914:
+       22:  915:    if (is_trait != should_be_trait)
+        -:  916:    {
+       11:  917:        UnityTestResultsFailBegin(lineNumber);
+       11:  918:        UnityPrint(UnityStrExpected);
+       11:  919:        if (!should_be_trait)
+        5:  920:            UnityPrint(UnityStrNot);
+       11:  921:        UnityPrint(trait_names[trait_index]);
+       11:  922:        UnityPrint(UnityStrWas);
+        -:  923:#ifdef UNITY_DOUBLE_VERBOSE
+        -:  924:        UnityPrintFloat(actual);
+        -:  925:#else
+       11:  926:        if (should_be_trait)
+        6:  927:            UnityPrint(UnityStrNot);
+       11:  928:        UnityPrint(trait_names[trait_index]);
+        -:  929:#endif
+       11:  930:        UnityAddMsgIfSpecified(msg);
+       11:  931:        UNITY_FAIL_AND_BAIL;
+        -:  932:    }
+        -:  933:}
+        -:  934:
+        -:  935:
+        -:  936:#endif /* not UNITY_EXCLUDE_DOUBLE */
+        -:  937:
+        -:  938:/*-----------------------------------------------*/
+      126:  939:void UnityAssertNumbersWithin( const _U_UINT delta,
+        -:  940:                               const _U_SINT expected,
+        -:  941:                               const _U_SINT actual,
+        -:  942:                               const char* msg,
+        -:  943:                               const UNITY_LINE_TYPE lineNumber,
+        -:  944:                               const UNITY_DISPLAY_STYLE_T style)
+        -:  945:{
+      126:  946:    UNITY_SKIP_EXECUTION;
+        -:  947:
+      126:  948:    if ((style & UNITY_DISPLAY_RANGE_INT) == UNITY_DISPLAY_RANGE_INT)
+        -:  949:    {
+       44:  950:        if (actual > expected)
+       23:  951:            Unity.CurrentTestFailed = ((_U_UINT)(actual - expected) > delta);
+        -:  952:        else
+       21:  953:            Unity.CurrentTestFailed = ((_U_UINT)(expected - actual) > delta);
+        -:  954:    }
+        -:  955:    else
+        -:  956:    {
+       82:  957:        if ((_U_UINT)actual > (_U_UINT)expected)
+       48:  958:            Unity.CurrentTestFailed = ((_U_UINT)(actual - expected) > delta);
+        -:  959:        else
+       34:  960:            Unity.CurrentTestFailed = ((_U_UINT)(expected - actual) > delta);
+        -:  961:    }
+        -:  962:
+      126:  963:    if (Unity.CurrentTestFailed)
+        -:  964:    {
+       37:  965:        UnityTestResultsFailBegin(lineNumber);
+       37:  966:        UnityPrint(UnityStrDelta);
+       37:  967:        UnityPrintNumberByStyle((_U_SINT)delta, style);
+       37:  968:        UnityPrint(UnityStrExpected);
+       37:  969:        UnityPrintNumberByStyle(expected, style);
+       37:  970:        UnityPrint(UnityStrWas);
+       37:  971:        UnityPrintNumberByStyle(actual, style);
+       37:  972:        UnityAddMsgIfSpecified(msg);
+       37:  973:        UNITY_FAIL_AND_BAIL;
+        -:  974:    }
+        -:  975:}
+        -:  976:
+        -:  977:/*-----------------------------------------------*/
+       37:  978:void UnityAssertEqualString(const char* expected,
+        -:  979:                            const char* actual,
+        -:  980:                            const char* msg,
+        -:  981:                            const UNITY_LINE_TYPE lineNumber)
+        -:  982:{
+        -:  983:    _UU32 i;
+        -:  984:
+       37:  985:    UNITY_SKIP_EXECUTION;
+        -:  986:
+        -:  987:    /* if both pointers not null compare the strings */
+       72:  988:    if (expected && actual)
+        -:  989:    {
+      228:  990:        for (i = 0; expected[i] || actual[i]; i++)
+        -:  991:        {
+      199:  992:            if (expected[i] != actual[i])
+        -:  993:            {
+        6:  994:                Unity.CurrentTestFailed = 1;
+        6:  995:                break;
+        -:  996:            }
+        -:  997:        }
+        -:  998:    }
+        -:  999:    else
+        -: 1000:    { /* handle case of one pointers being null (if both null, test should pass) */
+        2: 1001:        if (expected != actual)
+        -: 1002:        {
+        2: 1003:            Unity.CurrentTestFailed = 1;
+        -: 1004:        }
+        -: 1005:    }
+        -: 1006:
+       37: 1007:    if (Unity.CurrentTestFailed)
+        -: 1008:    {
+        8: 1009:      UnityTestResultsFailBegin(lineNumber);
+        8: 1010:      UnityPrintExpectedAndActualStrings(expected, actual);
+        8: 1011:      UnityAddMsgIfSpecified(msg);
+        8: 1012:      UNITY_FAIL_AND_BAIL;
+        -: 1013:    }
+        -: 1014:}
+        -: 1015:
+        -: 1016:/*-----------------------------------------------*/
+       11: 1017:void UnityAssertEqualStringLen(const char* expected,
+        -: 1018:                            const char* actual,
+        -: 1019:                            const _UU32 length,
+        -: 1020:                            const char* msg,
+        -: 1021:                            const UNITY_LINE_TYPE lineNumber)
+        -: 1022:{
+        -: 1023:    _UU32 i;
+        -: 1024:
+       11: 1025:    UNITY_SKIP_EXECUTION;
+        -: 1026:
+        -: 1027:    /* if both pointers not null compare the strings */
+       20: 1028:    if (expected && actual)
+        -: 1029:    {
+       31: 1030:        for (i = 0; (expected[i] || actual[i]) && i < length; i++)
+        -: 1031:        {
+       26: 1032:            if (expected[i] != actual[i])
+        -: 1033:            {
+        4: 1034:                Unity.CurrentTestFailed = 1;
+        4: 1035:                break;
+        -: 1036:            }
+        -: 1037:        }
+        -: 1038:    }
+        -: 1039:    else
+        -: 1040:    { /* handle case of one pointers being null (if both null, test should pass) */
+        2: 1041:        if (expected != actual)
+        -: 1042:        {
+        2: 1043:            Unity.CurrentTestFailed = 1;
+        -: 1044:        }
+        -: 1045:    }
+        -: 1046:
+       11: 1047:    if (Unity.CurrentTestFailed)
+        -: 1048:    {
+        6: 1049:      UnityTestResultsFailBegin(lineNumber);
+        6: 1050:      UnityPrintExpectedAndActualStringsLen(expected, actual, length);
+        6: 1051:      UnityAddMsgIfSpecified(msg);
+        6: 1052:      UNITY_FAIL_AND_BAIL;
+        -: 1053:    }
+        -: 1054:}
+        -: 1055:
+        -: 1056:
+        -: 1057:/*-----------------------------------------------*/
+       12: 1058:void UnityAssertEqualStringArray( const char** expected,
+        -: 1059:                                  const char** actual,
+        -: 1060:                                  const _UU32 num_elements,
+        -: 1061:                                  const char* msg,
+        -: 1062:                                  const UNITY_LINE_TYPE lineNumber)
+        -: 1063:{
+       12: 1064:    _UU32 i, j = 0;
+        -: 1065:
+       12: 1066:    UNITY_SKIP_EXECUTION;
+        -: 1067:
+        -: 1068:    /* if no elements, it's an error */
+       12: 1069:    if (num_elements == 0)
+        -: 1070:    {
+        1: 1071:        UnityPrintPointlessAndBail();
+        -: 1072:    }
+        -: 1073:
+       11: 1074:    if (UnityCheckArraysForNull((UNITY_INTERNAL_PTR)expected, (UNITY_INTERNAL_PTR)actual, lineNumber, msg) == 1)
+        1: 1075:        return;
+        -: 1076:
+        -: 1077:    do
+        -: 1078:    {
+        -: 1079:        /* if both pointers not null compare the strings */
+       38: 1080:        if (expected[j] && actual[j])
+        -: 1081:        {
+       66: 1082:            for (i = 0; expected[j][i] || actual[j][i]; i++)
+        -: 1083:            {
+       50: 1084:                if (expected[j][i] != actual[j][i])
+        -: 1085:                {
+        2: 1086:                    Unity.CurrentTestFailed = 1;
+        2: 1087:                    break;
+        -: 1088:                }
+        -: 1089:            }
+        -: 1090:        }
+        -: 1091:        else
+        -: 1092:        { /* handle case of one pointers being null (if both null, test should pass) */
+        2: 1093:            if (expected[j] != actual[j])
+        -: 1094:            {
+        2: 1095:                Unity.CurrentTestFailed = 1;
+        -: 1096:            }
+        -: 1097:        }
+        -: 1098:
+       20: 1099:        if (Unity.CurrentTestFailed)
+        -: 1100:        {
+        4: 1101:            UnityTestResultsFailBegin(lineNumber);
+        4: 1102:            if (num_elements > 1)
+        -: 1103:            {
+        4: 1104:                UnityPrint(UnityStrElement);
+        4: 1105:                UnityPrintNumberUnsigned(j);
+        -: 1106:            }
+        4: 1107:            UnityPrintExpectedAndActualStrings((const char*)(expected[j]), (const char*)(actual[j]));
+        4: 1108:            UnityAddMsgIfSpecified(msg);
+        4: 1109:            UNITY_FAIL_AND_BAIL;
+        -: 1110:        }
+       16: 1111:    } while (++j < num_elements);
+        -: 1112:}
+        -: 1113:
+        -: 1114:/*-----------------------------------------------*/
+       21: 1115:void UnityAssertEqualMemory( UNITY_INTERNAL_PTR expected,
+        -: 1116:                             UNITY_INTERNAL_PTR actual,
+        -: 1117:                             const _UU32 length,
+        -: 1118:                             const _UU32 num_elements,
+        -: 1119:                             const char* msg,
+        -: 1120:                             const UNITY_LINE_TYPE lineNumber)
+        -: 1121:{
+       21: 1122:    UNITY_PTR_ATTRIBUTE const unsigned char* ptr_exp = (UNITY_PTR_ATTRIBUTE const unsigned char*)expected;
+       21: 1123:    UNITY_PTR_ATTRIBUTE const unsigned char* ptr_act = (UNITY_PTR_ATTRIBUTE const unsigned char*)actual;
+       21: 1124:    _UU32 elements = num_elements;
+        -: 1125:    _UU32 bytes;
+        -: 1126:
+       21: 1127:    UNITY_SKIP_EXECUTION;
+        -: 1128:
+       21: 1129:    if ((elements == 0) || (length == 0))
+        -: 1130:    {
+        1: 1131:        UnityPrintPointlessAndBail();
+        -: 1132:    }
+        -: 1133:
+       20: 1134:    if (UnityCheckArraysForNull((UNITY_INTERNAL_PTR)expected, (UNITY_INTERNAL_PTR)actual, lineNumber, msg) == 1)
+        1: 1135:        return;
+        -: 1136:
+       53: 1137:    while (elements--)
+        -: 1138:    {
+        -: 1139:        /* /////////////////////////////////// */
+       28: 1140:        bytes = length;
+      165: 1141:        while (bytes--)
+        -: 1142:        {
+      114: 1143:            if (*ptr_exp != *ptr_act)
+        -: 1144:            {
+        5: 1145:                UnityTestResultsFailBegin(lineNumber);
+        5: 1146:                UnityPrint(UnityStrMemory);
+        5: 1147:                if (num_elements > 1)
+        -: 1148:                {
+        3: 1149:                    UnityPrint(UnityStrElement);
+        3: 1150:                    UnityPrintNumberUnsigned(num_elements - elements - 1);
+        -: 1151:                }
+        5: 1152:                UnityPrint(UnityStrByte);
+        5: 1153:                UnityPrintNumberUnsigned(length - bytes - 1);
+        5: 1154:                UnityPrint(UnityStrExpected);
+        5: 1155:                UnityPrintNumberByStyle(*ptr_exp, UNITY_DISPLAY_STYLE_HEX8);
+        5: 1156:                UnityPrint(UnityStrWas);
+        5: 1157:                UnityPrintNumberByStyle(*ptr_act, UNITY_DISPLAY_STYLE_HEX8);
+        5: 1158:                UnityAddMsgIfSpecified(msg);
+        5: 1159:                UNITY_FAIL_AND_BAIL;
+        -: 1160:            }
+        -: 1161:            /* ptr_exp = (UNITY_INTERNAL_PTR)((_UP)ptr_exp + 1); */
+        -: 1162:            /* ptr_act = (UNITY_INTERNAL_PTR)((_UP)ptr_act + 1); */
+      109: 1163:            ptr_exp += 1;
+      109: 1164:            ptr_act += 1;
+        -: 1165:        }
+        -: 1166:        /* /////////////////////////////////// */
+        -: 1167:
+        -: 1168:    }
+        -: 1169:}
+        -: 1170:
+        -: 1171:/*-----------------------------------------------
+        -: 1172: * Control Functions
+        -: 1173: *-----------------------------------------------*/
+        -: 1174:
+        9: 1175:void UnityFail(const char* msg, const UNITY_LINE_TYPE line)
+        -: 1176:{
+        9: 1177:    UNITY_SKIP_EXECUTION;
+        -: 1178:
+        9: 1179:    UnityTestResultsBegin(Unity.TestFile, line);
+        9: 1180:    UnityPrintFail();
+        9: 1181:    if (msg != NULL)
+        -: 1182:    {
+        9: 1183:        UNITY_OUTPUT_CHAR(':');
+        -: 1184:
+        -: 1185:#ifndef UNITY_EXCLUDE_DETAILS
+        9: 1186:        if (Unity.CurrentDetail1)
+        -: 1187:        {
+        1: 1188:            UnityPrint(UnityStrDetail1Name);
+        1: 1189:            UnityPrint(Unity.CurrentDetail1);
+        1: 1190:            if (Unity.CurrentDetail2)
+        -: 1191:            {
+        1: 1192:                UnityPrint(UnityStrDetail2Name);
+        1: 1193:                UnityPrint(Unity.CurrentDetail2);
+        -: 1194:            }
+        1: 1195:            UnityPrint(UnityStrSpacer);
+        -: 1196:        }
+        -: 1197:#endif
+        9: 1198:        if (msg[0] != ' ')
+        -: 1199:        {
+        2: 1200:            UNITY_OUTPUT_CHAR(' ');
+        -: 1201:        }
+        9: 1202:        UnityPrint(msg);
+        -: 1203:    }
+        -: 1204:
+        9: 1205:    UNITY_FAIL_AND_BAIL;
+        -: 1206:}
+        -: 1207:
+        -: 1208:/*-----------------------------------------------*/
+        3: 1209:void UnityIgnore(const char* msg, const UNITY_LINE_TYPE line)
+        -: 1210:{
+        3: 1211:    UNITY_SKIP_EXECUTION;
+        -: 1212:
+        3: 1213:    UnityTestResultsBegin(Unity.TestFile, line);
+        3: 1214:    UnityPrint(UnityStrIgnore);
+        3: 1215:    if (msg != NULL)
+        -: 1216:    {
+        1: 1217:      UNITY_OUTPUT_CHAR(':');
+        1: 1218:      UNITY_OUTPUT_CHAR(' ');
+        1: 1219:      UnityPrint(msg);
+        -: 1220:    }
+        3: 1221:    UNITY_IGNORE_AND_BAIL;
+        -: 1222:}
+        -: 1223:
+        -: 1224:/*-----------------------------------------------*/
+        -: 1225:#if defined(UNITY_WEAK_ATTRIBUTE)
+        -: 1226:    UNITY_WEAK_ATTRIBUTE void setUp(void) { }
+        -: 1227:    UNITY_WEAK_ATTRIBUTE void tearDown(void) { }
+        -: 1228:#elif defined(UNITY_WEAK_PRAGMA)
+        -: 1229:#   pragma weak setUp
+        -: 1230:    void setUp(void) { }
+        -: 1231:#   pragma weak tearDown
+        -: 1232:    void tearDown(void) { }
+        -: 1233:#endif
+        -: 1234:/*-----------------------------------------------*/
+      352: 1235:void UnityDefaultTestRun(UnityTestFunction Func, const char* FuncName, const int FuncLineNum)
+        -: 1236:{
+      352: 1237:    Unity.CurrentTestName = FuncName;
+      352: 1238:    Unity.CurrentTestLineNumber = (UNITY_LINE_TYPE)FuncLineNum;
+      352: 1239:    Unity.NumberOfTests++;
+      352: 1240:    UNITY_CLR_DETAILS();
+      354: 1241:    if (TEST_PROTECT())
+        -: 1242:    {
+      352: 1243:        setUp();
+      352: 1244:        Func();
+        -: 1245:    }
+      352: 1246:    if (TEST_PROTECT() && !(Unity.CurrentTestIgnored))
+        -: 1247:    {
+      351: 1248:        tearDown();
+        -: 1249:    }
+      352: 1250:    UnityConcludeTest();
+      352: 1251:}
+        -: 1252:
+        -: 1253:/*-----------------------------------------------*/
+        1: 1254:void UnityBegin(const char* filename)
+        -: 1255:{
+        1: 1256:    Unity.TestFile = filename;
+        1: 1257:    Unity.CurrentTestName = NULL;
+        1: 1258:    Unity.CurrentTestLineNumber = 0;
+        1: 1259:    Unity.NumberOfTests = 0;
+        1: 1260:    Unity.TestFailures = 0;
+        1: 1261:    Unity.TestIgnores = 0;
+        1: 1262:    Unity.CurrentTestFailed = 0;
+        1: 1263:    Unity.CurrentTestIgnored = 0;
+        -: 1264:
+        1: 1265:    UNITY_CLR_DETAILS();
+        -: 1266:    UNITY_OUTPUT_START();
+        1: 1267:}
+        -: 1268:
+        -: 1269:/*-----------------------------------------------*/
+        2: 1270:int UnityEnd(void)
+        -: 1271:{
+        2: 1272:    UNITY_PRINT_EOL();
+        2: 1273:    UnityPrint(UnityStrBreaker);
+        2: 1274:    UNITY_PRINT_EOL();
+        2: 1275:    UnityPrintNumber((_U_SINT)(Unity.NumberOfTests));
+        2: 1276:    UnityPrint(UnityStrResultsTests);
+        2: 1277:    UnityPrintNumber((_U_SINT)(Unity.TestFailures));
+        2: 1278:    UnityPrint(UnityStrResultsFailures);
+        2: 1279:    UnityPrintNumber((_U_SINT)(Unity.TestIgnores));
+        2: 1280:    UnityPrint(UnityStrResultsIgnored);
+        2: 1281:    UNITY_PRINT_EOL();
+        2: 1282:    if (Unity.TestFailures == 0U)
+        -: 1283:    {
+        1: 1284:        UnityPrintOk();
+        -: 1285:    }
+        -: 1286:    else
+        -: 1287:    {
+        1: 1288:        UnityPrintFail();
+        -: 1289:#ifdef UNITY_DIFFERENTIATE_FINAL_FAIL
+        -: 1290:        UNITY_OUTPUT_CHAR('E'); UNITY_OUTPUT_CHAR('D');
+        -: 1291:#endif
+        -: 1292:    }
+        2: 1293:    UNITY_PRINT_EOL();
+        2: 1294:    UNITY_FLUSH_CALL();
+        -: 1295:    UNITY_OUTPUT_COMPLETE();
+        2: 1296:    return (int)(Unity.TestFailures);
+        -: 1297:}
+        -: 1298:
+        -: 1299:/*-----------------------------------------------*/

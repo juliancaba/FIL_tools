@@ -1,0 +1,17 @@
+PRJ = prj.TDD
+
+.PHONY: all clean export
+
+
+all: export
+
+runner:
+	@cd testbench ;\
+	make; cd -
+
+export:
+	vivado_hls scriptTDD.tcl
+
+
+clean:
+	$(RM) -rf *~ *.log $(PRJ)

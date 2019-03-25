@@ -1,0 +1,40 @@
+#pext Set the reference directory to where the script is
+set SRCfolder {{SRC_DIR}}
+set SRCfiles [list {{SRC_FILES}}]
+set SIMfolder {{TB_DIR}}
+set SIMfiles [list {{TB_FILES}}]
+set part {{PART}}
+set origin_dir [file dirname [info script]]
+set prj_name tmp
+
+# Create project
+create_project $prj_name $origin_dir/$prj_name -part $part -force
+
+# Set project properties
+set obj [get_projects $prj_name]
+set_property "board_part" "{{BOARD}}" $obj
+set_property "default_lib" "xil_defaultlib" $obj
+set_property "simulator_language" "Mixed" $obj
+set_property "target_language" "{{LANGUAGE}}" $obj
+set_property SOURCE_SET sources_1 [get_filesets sim_1]
+
+
+# Add source files
+foreach it $SRCfiles {
+    add_files -norecurse $origin_dir/$SRCfolder/$it
+}
+
+
+# Add sim files
+foreach it $SIMfiles {
+    add_files -fileset sim_1 -norecurse $origin_dir/$SIMfolder/$it
+}
+
+{{IP_CORES}}
+
+update_compile_order -fileset sources_1
+update_compile_order -fileset sim_1
+
+
+launch_run  synth_1
+wait_on_run synth_1

@@ -1,0 +1,39 @@
+PRJ=tmp
+
+VERSION=2017_4
+
+{% if TB_DIR %}
+all: clean cpy_src cpy_sim run dcp
+{% else %}
+all: clean cpy_src run dcp
+{% endif %}
+
+
+dcp:
+	@cd src;\
+	for i in `find ../tmp/tmp.srcs -name *.dcp`; do \
+	 ln -sf $$i; \
+	done
+
+cpy_src:
+	@mkdir src
+	cd src; cp {{SRC_DIR}}/*.vhd .; \
+	cd -
+
+{% if TB_DIR %}
+cpy_sim:
+	@mkdir sim
+	cd sim; cp {{TB_DIR}}/*.vhd .; \
+	cd -
+{% endif %}
+
+run: create.tcl
+	vivado -mode batch -source $^
+
+
+clean:
+	$(RM) -rf src $(PRJ) *~ *.jou *.log 
+
+
+
+

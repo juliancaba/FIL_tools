@@ -1,0 +1,13 @@
+open_project hls_prj
+set_top {{TOP_NAME}}
+{{SRC_FILES}}
+{{TB_FILES}}
+{{DAT_FILES}}
+open_solution "solution"
+set_part {{PART}}
+create_clock -period {{CLK_PERIOD}} -name default
+{{DIRECTIVES_LINE}}
+{% if CSIM %}csim_design{% endif %}
+csynth_design
+{% if COSIM %}cosim_design{% endif %}
+
